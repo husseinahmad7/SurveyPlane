@@ -1,0 +1,37 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+django = "==5.1.2"
+djangorestframework = "*"
+django-rest-authemail = "*"
+django-filter = "==24.2"
+django-environ = "*"
+
+
+[dev-packages]
+kolo = "*"
+
+[requires]
+python_version = "3.12.4"
+
+[scripts]
+runserver = 'python manage.py runserver'
+makemigrations = 'python manage.py makemigrations'
+migrate = 'python manage.py migrate'
+createsuperuser = 'python manage.py createsuperuser'
+makemessages = 'django-admin makemessages -l ar'
+compilemessages = 'python manage.py compilemessages'
+check = 'python manage.py check'
+test = 'python manage.py test'
+testWa = 'python -Wa manage.py test'
+shell = 'python manage.py shell'
+startapp = 'python manage.py startapp'
+availability_data = 'python manage.py availability_data'
+booking_data = 'python manage.py booking_data'
+review_data = 'python manage.py review_data'
+populate_data = 'python manage.py populate_data'
+fixture_data = 'python manage.py fixture_data'
+install_extensions = 'python manage.py install_extensions'

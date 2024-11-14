@@ -29,11 +29,16 @@ class QuestionSerializer(serializers.ModelSerializer):
         settings = data.get('settings', {})
         # schema = Question.get_settings_schema()
 
-        if question_type in ['single_choice', 'multiple_choice']:
+        if question_type == Question.QUESTION_TYPES.SINGLE:# in ['single_choice', 'multiple_choice']:
             if 'options' not in settings or not settings['options']:
                 raise serializers.ValidationError("Choice questions must have options")
 
-        if question_type == 'multiple_choice':
+        if question_type == Question.QUESTION_TYPES.MULTIPLE:
+            if 'options' in settings and 'flexable' not in settings:
+                raise serializers.ValidationError("in Multiple choice question you must specify `flexable`== true or false beside specifying options")
+            if 'options' not in settings and ('flexable' not in settings or settings['flexable'] == False):
+                raise serializers.ValidationError("in Multiple choice question you must specify `flexable` == true if you dont specify options")
+            
             min_sel = settings.get('min_selections', 1)
             max_sel = settings.get('max_selections')
             if max_sel and min_sel > max_sel:
@@ -181,10 +186,18 @@ class AnswerSerializer(serializers.ModelSerializer):
  # Validate based on question type
         if question.question_type == Question.QUESTION_TYPES.MULTIPLE:
             if 'choices' not in value or not value['choices']:
-                raise serializers.ValidationError({"value":"Choice questions must have at least one selected option"})
-            for choice in value['choices']:
-                if choice not in question.settings.get('options'):
-                    raise serializers.ValidationError({"value":f'the choice {choice} is not a valid choice for this question'})
+                raise serializers.ValidationError({"value":"Muliple choice questions must have `choices` in `value` and have at least one selected option"})
+            if not isinstance(value['choices'],list):
+                raise serializers.ValidationError({"value":"the `choices` in `value` must be a list"})
+            if settings.get('min_selections') and len(value['choices']) < settings.get('min_selections'):
+                raise serializers.ValidationError({"value":f"Choice questions must have at least {settings.get('min_selections')} selected options"})
+            if settings.get('max_selections') and len(value['choices']) > settings.get('max_selections'):
+                raise serializers.ValidationError({"value":f"Choice questions must have at most {settings.get('max_selections')} selected options"})
+            # check each answer choice if its in the options
+            if settings.get('flexable') == False:
+                for choice in value['choices']:
+                    if choice not in settings.get('options'):
+                        raise serializers.ValidationError({"value":f'the choice `{choice}` is not a valid choice for this question'})
         elif question.question_type == Question.QUESTION_TYPES.SINGLE:
             if 'choice' not in value or not value['choice'] or not isinstance(value['choice'],str):
                 raise serializers.ValidationError({"value":"Single choice question can only have one selected option"})
@@ -288,15 +301,23 @@ class ResponseSerializer(serializers.ModelSerializer):
         
     def validate(self, data):
         answers_data = data.get('answers')
-        # print(data)
-        # {'survey': <Survey: discussion>, 
-        # 'answers': [{'question': <Question: Question object (9)>, 'value': 'hussana'},
-        #  {'question': <Question: Question object (10)>, 'value': {'choices': ['Option A']}},
-        # {'question': <Question: Question object (12)>, 'value': {'choices': ['Option A']}}]}
+        survey_questions = data.get('survey').questions.all()
+        required_questions = survey_questions.filter(required=True).values_list('id', flat=True)
+        answered_questions = [answer_data.get('question').id for answer_data in answers_data]
+        print(f'required_questions: {required_questions}\nanswered_questions: {answered_questions}')
+        required_questions_not_answered = []
+        for required_question in required_questions:
+            if required_question not in answered_questions:
+                required_questions_not_answered.append(required_question)
+        if required_questions_not_answered:
+            raise serializers.ValidationError({'answers':f'All required questions must be answered','not_answered_required_questions': required_questions_not_answered})
+
+        if not required_questions.filter(id__in=answered_questions).count() == required_questions.count():
+            raise serializers.ValidationError(f'All required questions must be answered')
+
         for answer_data in answers_data:
             if answer_data.get('question').survey.pk is not data.get('survey').pk:
-                print(f"{answer_data.get('question').survey.pk} --- {data.get('survey').pk}")
-                raise serializers.ValidationError(f'this question ({answer_data.get('question')}) is not for this survey')
+                raise serializers.ValidationError(f'this question ({answer_data.get("question")}) is not for this survey')
 
         return data
 

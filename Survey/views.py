@@ -5,18 +5,24 @@ from django.core.files.storage import default_storage
 from django.db.models import F
 from django.db.models.functions import Cast
 from django.db.models import Avg, Max, Min, Count, FloatField
-
+from django.conf import settings as project_settings
 
 # class QuestionSerializer(serializers.ModelSerializer):
 #     class Meta:
 #         model = Question
 #         fields = ['id', 'question_text', 'question_type', 'required', 'order', 'options']
 class QuestionSerializer(serializers.ModelSerializer):
+    file_data = serializers.CharField(write_only=True, required=False, allow_null=True)
+    url = serializers.URLField(write_only=True, required=False, allow_null=True)
+    file = serializers.FileField(write_only=True, required=False, allow_null=True)
+
     class Meta:
         model = Question
-        fields = ['id', 'question_text', 'question_type', 'required', 'order', 'settings']
+        fields = ['id', 'question_text', 'question_type', 'required', 'order', 'settings','file_data', 'url','file']
 
     def validate(self, data):
+        if self.context.get('validated') is True:
+            return data
         question_type = data.get('question_type',None)
         if not question_type:
             raise serializers.ValidationError({'question_type':'please specify the `question_type` field.'})
@@ -34,9 +40,82 @@ class QuestionSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Minimum selections cannot be greater than maximum selections"
                 )
+        if data.get('file_data'):
+            file_data = data.pop('file_data', None)
 
+            try:
+                # Parse file data (format: "data:mimetype;base64,<base64-data>")
+                file_format, filestr = file_data.split(';base64,')
+                ext = file_format.split('/')[-1]
+                
+                # Validate file extension
+                # allowed_extensions = question.settings.get('allowed_extensions', ['pdf', 'doc', 'docx'])
+                # if ext.lower() not in allowed_extensions:
+                #     raise serializers.ValidationError(
+                #         f"File type not allowed. Allowed types: {', '.join(allowed_extensions)}"
+                #     )
+
+                # Decode file data
+                file_data = base64.b64decode(filestr)
+                
+                file_size = len(file_data) / (1024 * 1024)  # Convert to MB TODO round
+                
+                # Validate file size
+                max_size = getattr(project_settings,'max_file_size', 5 * 1024 * 1024)  # Default 5MB
+                if file_size > max_size:
+                    raise serializers.ValidationError(
+                        f"File size too large. Maximum size: {max_size}MB"
+                    )
+
+                # Generate unique filename
+                filename = f"{uuid.uuid4().hex}.{ext}"
+                
+                # Store file information in settings field
+                settings.update({'attachment_file_size': file_size})
+
+
+                data['file'] = ContentFile(file_data, filename)
+                # self.context['file'] = ContentFile(file_data, filename)
+            except Exception as e:
+                raise serializers.ValidationError({'file_data':str(e)})
+        # elif question.question_type == 'file' and (file_data is None or file_data == ''):
+        #     print(file_data)
+        #     raise serializers.ValidationError({"file_data":"File question must have a file"})
+        
         return data
+    def create(self, validated_data):
 
+        # pop file before creating
+        file_data = validated_data.pop('file', None)
+        url = validated_data.pop('url', None)
+        # print(file_data)
+        question = Question(**validated_data)
+        question.clean()
+                
+        if file_data:
+            file_path = answer_file_upload_path(question, file_data.name, 'questions')
+            default_storage.save(file_path, file_data)
+            validated_data.get('settings').update({'attachment_file_path':file_path})
+
+        if url:
+            validated_data.get('settings').update({'attachment_url': url})
+        question.save()
+        # answer = Answer.objects.create(**validated_data) # question, value
+
+
+        return question
+    def update(self, instance, validated_data):
+        if validated_data.get('file'):
+            file_path = answer_file_upload_path(instance, validated_data.get('file').name, 'questions')
+            default_storage.delete(instance.settings.get('attachment_file_path'))
+            default_storage.save(file_path, validated_data.get('file'))
+            validated_data.get('settings').update({'attachment_file_path':file_path})
+
+        url = validated_data.pop('url', None)
+        if url:
+            validated_data.get('settings').update({'attachment_url': url})
+
+        return super().update(instance, validated_data)
 
 
 # class AnswerSerializer(serializers.ModelSerializer):
@@ -49,15 +128,24 @@ import uuid
 from django.core.files.base import ContentFile
 import os
 
-def answer_file_upload_path(instance, filename):
+def answer_file_upload_path(instance, filename, prefix):
     """
-    Generate file path: surveys/survey_id/response_id/question_id/filename
+    Generate file path: answers/survey_id/response_id/question_id/filename for answers
+    else: questions/survey_id/question_{id}.ext for 
     This creates organized file storage structure
     """
     ext = filename.split('.')[-1]
+    if isinstance(instance,Question):
+        new_filename = f"question_{instance.id}.{ext}" if getattr(instance,'id') is not None else f"question_{filename}"
+        return os.path.join(
+            prefix,
+            str(instance.survey.id),
+            new_filename
+        )
     new_filename = f"{instance.question.id}_{instance.response.id}.{ext}"
     return os.path.join(
-        'surveys',
+        prefix,
+        # 'surveys',
         str(instance.question.survey.id),
         str(instance.response.id),
         str(instance.question.id),
@@ -168,7 +256,7 @@ class AnswerSerializer(serializers.ModelSerializer):
         answer = Answer(**validated_data)
                 
         if file_data:
-            file_path = answer_file_upload_path(answer, file_data.name)
+            file_path = answer_file_upload_path(answer, file_data.name, 'answers')
             default_storage.save(file_path, file_data)
             validated_data.get('value').update({'file_path':file_path})
             # answer.value['file_path'] = file_path
@@ -181,7 +269,7 @@ class AnswerSerializer(serializers.ModelSerializer):
         return answer
     def update(self, instance, validated_data):
         if validated_data.get('file'):
-            file_path = answer_file_upload_path(instance, validated_data.get('file').name)
+            file_path = answer_file_upload_path(instance, validated_data.get('file').name, 'answers')
             default_storage.delete(instance.value.get('file_path'))
             default_storage.save(file_path, validated_data.get('file'))
             validated_data.get('value').update({'file_path':file_path})
@@ -258,16 +346,20 @@ class SurveyViewSet(viewsets.ModelViewSet):
         def validate(self, data):
             if 'questions' not in data or not data['questions']:
                 raise serializers.ValidationError({'questions': 'Questions is required and must not be empty'})
-            for question_data in data['questions']:
-                question = Question(**question_data)
-                question.clean()  # validate each question
+            # for question_data in data['questions']:
+            #     question = Question(**question_data)
+                
+            #     question.clean()  # do clean() for each question
             return data
 
         def create(self, validated_data):
             questions_data = validated_data.pop('questions')
             survey = Survey.objects.create(**validated_data)
             for question_data in questions_data:
-                Question.objects.create(survey=survey, **question_data) # TODO call clean(), use bulk_create
+                question = QuestionSerializer(data=question_data,context={'validated':True})
+                 # do clean() for each question
+                if question.is_valid(raise_exception=True):
+                    question.save(survey=survey) # TODO call clean(), use bulk_create
             return survey
 
     class OutputSerializer(serializers.ModelSerializer):

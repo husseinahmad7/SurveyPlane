@@ -165,3 +165,7 @@ EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER') or '<YOUR EMAIL_HOST_USER HE
 EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD') or '<YOUR EMAIL_HOST_PASSWORD HERE>'
 EMAIL_USE_TLS = True
 EMAIL_USE_SSL = False
+
+
+## uploading files
+max_file_size = 5 * 1024 * 1024 # 5 MB

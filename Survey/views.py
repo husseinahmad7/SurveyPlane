@@ -304,7 +304,7 @@ class ResponseSerializer(serializers.ModelSerializer):
         survey_questions = data.get('survey').questions.all()
         required_questions = survey_questions.filter(required=True).values_list('id', flat=True)
         answered_questions = [answer_data.get('question').id for answer_data in answers_data]
-        print(f'required_questions: {required_questions}\nanswered_questions: {answered_questions}')
+        # print(f'required_questions: {required_questions}\nanswered_questions: {answered_questions}')
         required_questions_not_answered = []
         for required_question in required_questions:
             if required_question not in answered_questions:

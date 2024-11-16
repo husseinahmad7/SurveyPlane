@@ -9,7 +9,7 @@ djangorestframework = "*"
 django-rest-authemail = "*"
 django-filter = "==24.2"
 django-environ = "*"
-
+numpy = "*"
 
 [dev-packages]
 kolo = "*"

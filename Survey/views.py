@@ -4,9 +4,10 @@ from .models import Survey, Question, Response, Answer
 from django.core.files.storage import default_storage
 from django.db.models import F
 from django.db.models.functions import Cast
-from django.db.models import Avg, Max, Min, Count, FloatField
+from django.db.models import Avg, Max, Min, Count,StdDev, FloatField
 from django.conf import settings as project_settings
-
+from .config import ANSWER_FILE_PATH_KEY, QUESTION_ATTACHEMENT_FILE_PATH_KEY
+import numpy
 # class QuestionSerializer(serializers.ModelSerializer):
 #     class Meta:
 #         model = Question
@@ -112,9 +113,9 @@ class QuestionSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         if validated_data.get('file'):
             file_path = answer_file_upload_path(instance, validated_data.get('file').name, 'questions')
-            default_storage.delete(instance.settings.get('attachment_file_path'))
+            default_storage.delete(instance.settings.get(QUESTION_ATTACHEMENT_FILE_PATH_KEY))
             default_storage.save(file_path, validated_data.get('file'))
-            validated_data.get('settings').update({'attachment_file_path':file_path})
+            validated_data.get('settings').update({QUESTION_ATTACHEMENT_FILE_PATH_KEY:file_path})
 
         url = validated_data.pop('url', None)
         if url:
@@ -271,7 +272,7 @@ class AnswerSerializer(serializers.ModelSerializer):
         if file_data:
             file_path = answer_file_upload_path(answer, file_data.name, 'answers')
             default_storage.save(file_path, file_data)
-            validated_data.get('value').update({'file_path':file_path})
+            validated_data.get('value').update({ANSWER_FILE_PATH_KEY:file_path})
             # answer.value['file_path'] = file_path
             # print(file_path)
             # answer.save()
@@ -283,9 +284,9 @@ class AnswerSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         if validated_data.get('file'):
             file_path = answer_file_upload_path(instance, validated_data.get('file').name, 'answers')
-            default_storage.delete(instance.value.get('file_path'))
+            default_storage.delete(instance.value.get(ANSWER_FILE_PATH_KEY))
             default_storage.save(file_path, validated_data.get('file'))
-            validated_data.get('value').update({'file_path':file_path})
+            validated_data.get('value').update({ANSWER_FILE_PATH_KEY:file_path})
 
         return super().update(instance, validated_data)
 
@@ -312,8 +313,8 @@ class ResponseSerializer(serializers.ModelSerializer):
         if required_questions_not_answered:
             raise serializers.ValidationError({'answers':f'All required questions must be answered','not_answered_required_questions': required_questions_not_answered})
 
-        if not required_questions.filter(id__in=answered_questions).count() == required_questions.count():
-            raise serializers.ValidationError(f'All required questions must be answered')
+        # if not required_questions.filter(id__in=answered_questions).count() == required_questions.count():
+        #     raise serializers.ValidationError(f'All required questions must be answered')
 
         for answer_data in answers_data:
             if answer_data.get('question').survey.pk is not data.get('survey').pk:
@@ -411,7 +412,6 @@ class SurveyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(creator=self.request.user)
-
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
         survey = self.get_object()
@@ -422,91 +422,258 @@ class SurveyViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Get query parameters for analysis
+        correlation_questions = request.query_params.getlist('correlate')
+        filter_question = request.query_params.get('filter_question')
+        filter_value = request.query_params.get('filter_value')
+        group_by = request.query_params.get('group_by')  # e.g., 'date', 'respondent__age_group'
+
+        # Base statistics
         stats = {
             'total_responses': survey.responses.count(),
-            'questions': []
+            'questions': [],
+            'correlations': {},
+            'patterns': {},
+            'filtered_insights': {}
         }
 
+        # Apply filters if specified
+        responses = survey.responses.all()
+        if filter_question and filter_value:
+            try:
+                filter_q = Question.objects.get(id=filter_question, survey=survey)
+                filtered_answers = Answer.objects.filter(
+                    question=filter_q,
+                    response__in=responses,
+                    value__contains=filter_value
+                )
+                responses = Response.objects.filter(id__in=filtered_answers.values('response'))
+            except Question.DoesNotExist:
+                pass
+
+        # Process each question's statistics
         for question in survey.questions.all():
             question_stats = {
+                'id': question.id,
                 'question_text': question.question_text,
                 'question_type': question.question_type,
+                'response_rate': 0,
+                'temporal_analysis': {},
             }
-            # rating_questions = Question.objects.filter(survey=survey, question_type=Question.QUESTION_TYPES.RATING)
-            answers = Answer.objects.filter(question=question)
             
-            if question.question_type in ['single_choice', 'multiple_choice']:
+            answers = Answer.objects.filter(question=question, response__in=responses)
+            total_answers = answers.count()
+            question_stats['response_rate'] = (total_answers / stats['total_responses']) * 100 if stats['total_responses'] > 0 else 0
+
+            # Time-based analysis TODO
+            # temporal_data = answers.extra(
+            #     select={'date': "DATE(submitted_at)"}
+            # ).values('date').annotate(count=Count('id')).order_by('date')
+            # question_stats['temporal_analysis'] = list(temporal_data)
+
+            if question.question_type in [Question.QUESTION_TYPES.SINGLE, Question.QUESTION_TYPES.MULTIPLE]:
                 option_counts = {}
+                percentage_distribution = {}
+                CHOICE_KEY = 'choices' if question.question_type == Question.QUESTION_TYPES.MULTIPLE else 'choice'
+                
                 for answer in answers:
-                    choices = answer.value.get('choices') or answer.value.get('choice')
+                    choices = answer.value.get(CHOICE_KEY)
                     if isinstance(choices, list):
                         for choice in choices:
                             option_counts[choice] = option_counts.get(choice, 0) + 1
                     else:
                         option_counts[choices] = option_counts.get(choices, 0) + 1
-                question_stats['option_distribution'] = option_counts
-                
-            elif question.question_type == 'rating':
+
+                # Calculate percentages
+                for option, count in option_counts.items():
+                    percentage_distribution[option] = (count / total_answers * 100) if total_answers > 0 else 0
+
+                question_stats.update({
+                    'option_distribution': option_counts,
+                    'percentage_distribution': percentage_distribution,
+                    'most_common_answer': max(option_counts.items(), key=lambda x: x[1])[0] if option_counts else None,
+                })
+
+            elif question.question_type == Question.QUESTION_TYPES.RATING:
                 rating_stats = answers.aggregate(
                     avg_rating=Avg(Cast('value', FloatField())),
                     max_rating=Max(Cast('value', FloatField())),
                     min_rating=Min(Cast('value', FloatField())),
-                    count_ratings=Count('id')
+                    count_ratings=Count('id'),
+                    stddev_rating=StdDev(Cast('value', FloatField()))
                 )
+                
+                # Calculate rating distribution
+                rating_distribution = answers.values('value').annotate(
+                    count=Count('id')
+                ).order_by('value')
+
                 question_stats.update({
                     'average_rating': float(rating_stats['avg_rating']) if rating_stats['avg_rating'] is not None else None,
                     'max_rating': float(rating_stats['max_rating']) if rating_stats['max_rating'] is not None else None,
                     'min_rating': float(rating_stats['min_rating']) if rating_stats['min_rating'] is not None else None,
-                    'total_ratings': rating_stats['count_ratings']
+                    'total_ratings': rating_stats['count_ratings'],
+                    'standard_deviation': float(rating_stats['stddev_rating']) if rating_stats['stddev_rating'] is not None else None,
+                    'rating_distribution': list(rating_distribution)
                 })
 
             stats['questions'].append(question_stats)
 
-                # avg_rating = answers.aggregate(Avg(F('value'))) # TODO decide how to store rating answer
-#                 TypeError(f'the JSON object must be str, bytes or bytearray, '
-# TypeError: the JSON object must be str, bytes or bytearray, not float
-                # question_stats['average_rating'] = avg_rating['value__avg']
+        # Calculate correlations between specified questions
+        if len(correlation_questions) >= 2:
+            for i in range(len(correlation_questions)):
+                for j in range(i + 1, len(correlation_questions)):
+                    q1_id, q2_id = correlation_questions[i], correlation_questions[j]
+                    try:
+                        q1 = Question.objects.get(id=q1_id, survey=survey)
+                        q2 = Question.objects.get(id=q2_id, survey=survey)
+                        
+                        correlation_key = f"{q1_id}_{q2_id}"
+                        correlation_data = self._calculate_correlation(q1, q2, responses)
+                        stats['correlations'][correlation_key] = {
+                            'questions': [q1.question_text, q2.question_text],
+                            'data': correlation_data
+                        }
+                    except Question.DoesNotExist:
+                        continue
 
-#list(survey.responses.annotate(date=TruncDate('created_at'))
-                #    .values('date')
-                #    .annotate(count=Count('id'))
-                #    .order_by('date'))
-# user = answer.response.user
+        # Pattern recognition
+        if group_by:
+            patterns = self._recognize_patterns(survey, responses, group_by)
+            stats['patterns'] = patterns
 
-#                     # Assuming you have age, gender, and location fields in your User model
-#                     if hasattr(user, 'age'):  # Example - adapt as needed
-#                         age_group = self.get_age_group(user.age)
-#                         age_groups[age_group] = age_groups.get(age_group, 0) + 1
-#                     # ... similarly collect gender and location counts
-
-#                     if hasattr(user, 'gender'):
-#                         gender = user.gender
-#                         gender_counts[gender] = gender_counts.get(gender, 0) + 1
-
-#                     if hasattr(user, 'location'):
-#                         location = user.location
-#                         locations[location] = locations.get(location, 0) + 1
-
-
-#                 demographics.update({"age_groups":age_groups})
-#                 demographics.update({"gender_counts":gender_counts})
-#                 demographics.update({"locations":locations})
-
-#         return demographics
-#     def get_age_group(self, age):
-#         # Example age grouping - customize as per your needs
-
-#         if age < 18:
-#             return "Under 18"
-#         elif age < 30:
-#             return "18-29"
-#         elif age < 45:
-#             return "30-44"
-
-#         # ... more age groups
-#         else:
-#             return "65+"  # Example
         return DRFResponse(stats)
+
+    def _calculate_correlation(self, q1, q2, responses):
+        """Calculate correlation between two questions"""
+        correlation_data = {
+            'joint_distribution': {},
+            'correlation_strength': None
+        }
+
+        # Get answers for both questions
+        answers1 = Answer.objects.filter(question=q1, response__in=responses)
+        answers2 = Answer.objects.filter(question=q2, response__in=responses)
+
+        # Create a mapping of response_id to answers
+        answers1_map = {a.response_id: a.value for a in answers1}
+        answers2_map = {a.response_id: a.value for a in answers2}
+
+        # Calculate joint distribution
+        common_responses = set(answers1_map.keys()) & set(answers2_map.keys())
+        
+        for response_id in common_responses:
+            val1 = str(answers1_map[response_id])
+            val2 = str(answers2_map[response_id])
+            key = f"{val1}_{val2}"
+            correlation_data['joint_distribution'][key] = correlation_data['joint_distribution'].get(key, 0) + 1
+
+        # Calculate correlation strength if both questions are numeric
+        if q1.question_type == Question.QUESTION_TYPES.RATING and q2.question_type == Question.QUESTION_TYPES.RATING:
+            values1 = [float(answers1_map[r]) for r in common_responses]
+            values2 = [float(answers2_map[r]) for r in common_responses]
+            
+            if values1 and values2:
+                correlation_data['correlation_strength'] = numpy.corrcoef(values1, values2)[0, 1]
+
+        return correlation_data
+
+    def _recognize_patterns(self, survey, responses, group_by):
+        """Recognize patterns in survey responses based on grouping"""
+        patterns = {
+            'group_analysis': {},
+            'trends': {},
+            'clusters': {}
+        }
+
+        if group_by == 'date':
+            # Temporal patterns
+            date_groups = responses.extra(
+                select={'date': "DATE(submitted_at)"}
+            ).values('date').annotate(
+                response_count=Count('id'),
+                avg_completion_time=Avg(F('submitted_at') - F('created_at'))
+            ).order_by('date')
+            
+            patterns['group_analysis'] = list(date_groups)
+
+        elif group_by.startswith('respondent__'):
+            # Demographic patterns
+            demographic_field = group_by.split('__')[1]
+            demographic_groups = responses.values(
+                f'respondent__{demographic_field}'
+            ).annotate(
+                response_count=Count('id')
+            ).order_by(f'respondent__{demographic_field}')
+            
+            patterns['group_analysis'] = list(demographic_groups)
+
+        # Identify trends
+        for question in survey.questions.all():
+            if question.question_type in [Question.QUESTION_TYPES.RATING, Question.QUESTION_TYPES.SINGLE]:
+                trend_data = Answer.objects.filter(
+                    question=question,
+                    response__in=responses
+                ).extra(
+                    select={'date': "DATE(submitted_at)"}
+                ).values('date').annotate(
+                    avg_value=Avg(Cast('value', FloatField()))
+                ).order_by('date')
+                
+                patterns['trends'][question.id] = list(trend_data)
+
+        return patterns
+    # @action(detail=True, methods=['get'])
+    # def statistics(self, request, pk=None):
+    #     survey = self.get_object()
+        
+    #     if not survey.is_closed:
+    #         return DRFResponse(
+    #             {'error': 'Survey is still active'}, 
+    #             status=status.HTTP_400_BAD_REQUEST
+    #         )
+
+    #     stats = {
+    #         'total_responses': survey.responses.count(),
+    #         'questions': []
+    #     }
+
+    #     for question in survey.questions.all():
+    #         question_stats = {
+    #             'question_text': question.question_text,
+    #             'question_type': question.question_type,
+    #         }
+    #         # rating_questions = Question.objects.filter(survey=survey, question_type=Question.QUESTION_TYPES.RATING)
+    #         answers = Answer.objects.filter(question=question)
+            
+    #         if question.question_type in [Question.QUESTION_TYPES.SINGLE, Question.QUESTION_TYPES.MULTIPLE]:
+    #             option_counts = {}
+    #             CHOICE_KEY = 'choices' if question.question_type == Question.QUESTION_TYPES.MULTIPLE else 'choice'
+    #             for answer in answers:
+    #                 choices = answer.value.get(CHOICE_KEY) # or answer.value.get('choice')
+    #                 if isinstance(choices, list):
+    #                     for choice in choices:
+    #                         option_counts[choice] = option_counts.get(choice, 0) + 1
+    #                 else:
+    #                     option_counts[choices] = option_counts.get(choices, 0) + 1
+    #             question_stats['option_distribution'] = option_counts
+                
+    #         elif question.question_type == 'rating':
+    #             rating_stats = answers.aggregate(
+    #                 avg_rating=Avg(Cast('value', FloatField())),
+    #                 max_rating=Max(Cast('value', FloatField())),
+    #                 min_rating=Min(Cast('value', FloatField())),
+    #                 count_ratings=Count('id')
+    #             )
+    #             question_stats.update({
+    #                 'average_rating': float(rating_stats['avg_rating']) if rating_stats['avg_rating'] is not None else None,
+    #                 'max_rating': float(rating_stats['max_rating']) if rating_stats['max_rating'] is not None else None,
+    #                 'min_rating': float(rating_stats['min_rating']) if rating_stats['min_rating'] is not None else None,
+    #                 'total_ratings': rating_stats['count_ratings']
+    #             })
+
+    #         stats['questions'].append(question_stats)
+    #     return DRFResponse(stats)
 
 class QuestionViewSet(viewsets.ModelViewSet):
     serializer_class = QuestionSerializer

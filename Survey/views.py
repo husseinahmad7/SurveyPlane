@@ -1,13 +1,17 @@
-# serializers.py
 from rest_framework import serializers
 from .models import Survey, Question, Response, Answer
 from django.core.files.storage import default_storage
-from django.db.models import F
-from django.db.models.functions import Cast
-from django.db.models import Avg, Max, Min, Count,StdDev, FloatField
 from django.conf import settings as project_settings
 from .config import ANSWER_FILE_PATH_KEY, QUESTION_ATTACHEMENT_FILE_PATH_KEY
-import numpy
+
+from rest_framework import viewsets, status, permissions
+from rest_framework.decorators import action
+from rest_framework.response import Response as DRFResponse
+from django.db.models import Count, Avg, Max, Min, StdDev, FloatField, Case, When, Value, F
+from django.db.models.functions import Cast, TruncDay, TruncWeek, TruncMonth, TruncQuarter
+from django.utils import timezone
+import numpy as np
+from datetime import datetime, timedelta
 # class QuestionSerializer(serializers.ModelSerializer):
 #     class Meta:
 #         model = Question
@@ -176,7 +180,6 @@ class AnswerSerializer(serializers.ModelSerializer):
         """
         if self.context.get('validated') is True:
             return data
-         
         question = data['question']
         # print(question)
         value = data.get('value')
@@ -297,7 +300,7 @@ class ResponseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Response
-        fields = ['id', 'survey', 'respondent', 'submitted_at', 'answers']
+        fields = ['id', 'survey', 'respondent', 'submitted_at', 'answers', 'completion_time']
         read_only_fields = ['submitted_at']
         
     def validate(self, data):
@@ -347,12 +350,7 @@ class ResponseSerializer(serializers.ModelSerializer):
         #     Answer.objects.create(response=response, **answer_data)
         # return response
 
-# views.py
-from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response as DRFResponse
-from django.db.models import Count, Avg
-from django.utils import timezone
+
 
 class SurveyViewSet(viewsets.ModelViewSet):
 
@@ -427,6 +425,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
         filter_question = request.query_params.get('filter_question')
         filter_value = request.query_params.get('filter_value')
         group_by = request.query_params.get('group_by')  # e.g., 'date', 'respondent__age_group'
+        trend_period = request.query_params.get('trend_period',None)#, 'day')  # Options: day, week, month, quarter
 
         # Base statistics
         stats = {
@@ -434,7 +433,8 @@ class SurveyViewSet(viewsets.ModelViewSet):
             'questions': [],
             'correlations': {},
             'patterns': {},
-            'filtered_insights': {}
+            'filtered_insights': {},
+            'trends': {}
         }
 
         # Apply filters if specified
@@ -450,6 +450,11 @@ class SurveyViewSet(viewsets.ModelViewSet):
                 responses = Response.objects.filter(id__in=filtered_answers.values('response'))
             except Question.DoesNotExist:
                 pass
+        
+        if trend_period:
+            trends = self._calculate_trends(responses, trend_period)
+            stats['trends'] = trends
+            
 
         # Process each question's statistics
         for question in survey.questions.all():
@@ -574,106 +579,162 @@ class SurveyViewSet(viewsets.ModelViewSet):
             values2 = [float(answers2_map[r]) for r in common_responses]
             
             if values1 and values2:
-                correlation_data['correlation_strength'] = numpy.corrcoef(values1, values2)[0, 1]
+                correlation_data['correlation_strength'] = np.corrcoef(values1, values2)[0, 1]
 
         return correlation_data
 
     def _recognize_patterns(self, survey, responses, group_by):
         """Recognize patterns in survey responses based on grouping"""
         patterns = {
-            'group_analysis': {},
-            'trends': {},
-            'clusters': {}
+            'group_analysis': [],
+            'trends': {}
         }
 
-        if group_by == 'date':
-            # Temporal patterns
-            date_groups = responses.extra(
-                select={'date': "DATE(submitted_at)"}
-            ).values('date').annotate(
-                response_count=Count('id'),
-                avg_completion_time=Avg(F('submitted_at') - F('created_at'))
-            ).order_by('date')
+        # if group_by == 'date':
+        #     # Convert to numpy arrays for faster processing
+        #     dates = np.array([r.submitted_at.date() for r in responses])
+        #     unique_dates = np.unique(dates)
             
-            patterns['group_analysis'] = list(date_groups)
-
-        elif group_by.startswith('respondent__'):
-            # Demographic patterns
-            demographic_field = group_by.split('__')[1]
-            demographic_groups = responses.values(
-                f'respondent__{demographic_field}'
-            ).annotate(
-                response_count=Count('id')
-            ).order_by(f'respondent__{demographic_field}')
-            
-            patterns['group_analysis'] = list(demographic_groups)
-
-        # Identify trends
-        for question in survey.questions.all():
-            if question.question_type in [Question.QUESTION_TYPES.RATING, Question.QUESTION_TYPES.SINGLE]:
-                trend_data = Answer.objects.filter(
-                    question=question,
-                    response__in=responses
-                ).extra(
-                    select={'date': "DATE(submitted_at)"}
-                ).values('date').annotate(
-                    avg_value=Avg(Cast('value', FloatField()))
-                ).order_by('date')
+        #     # Create date-based groups using numpy
+        #     date_stats = []
+        #     for date in unique_dates:
+        #         date_responses = responses.filter(submitted_at__date=date)
+        #         response_count = len(date_responses)
                 
-                patterns['trends'][question.id] = list(trend_data)
+        #         # Calculate average completion time if needed for analysis
+        #         # completion_times = np.array([(r.submitted_at - r.survey.created_at).total_seconds() 
+        #         #                             for r in date_responses])
+        #         # avg_completion_time = float(np.mean(completion_times)) if len(completion_times) > 0 else 0
+                
+        #         date_stats.append({
+        #             'date': date,
+        #             'response_count': response_count,
+        #             # 'avg_completion_time': avg_completion_time
+        #         })
+            
+        #     patterns['group_analysis'] = sorted(date_stats, key=lambda x: x['date'])
+
+        if group_by.startswith('respondent__'):
+            # Group by user demographic fields if available
+            field = group_by.split('__')[1]
+            demographic_groups = {}
+            
+            for response in responses:
+                if not response.respondent:
+                    continue
+                    
+                # Get the demographic value (e.g., age_group, gender, etc.)
+                value = getattr(response.respondent, field, None)
+                if value:
+                    if value not in demographic_groups:
+                        demographic_groups[value] = {
+                            'count': 0,
+                            'answers': []
+                        }
+                    demographic_groups[value]['count'] += 1
+                    demographic_groups[value]['answers'].extend(response.answers.all())
+
+            # Analyze patterns within each demographic group
+            for group, data in demographic_groups.items():
+                answer_values = []
+                for answer in data['answers']:
+                    if answer.question.question_type == Question.QUESTION_TYPES.RATING:
+                        answer_values.append(float(answer.value))
+                
+                if answer_values:
+                    answer_values = np.array(answer_values)
+                    data.update({
+                        'avg_rating': float(np.mean(answer_values)),
+                        'std_dev': float(np.std(answer_values)),
+                        'min_rating': float(np.min(answer_values)),
+                        'max_rating': float(np.max(answer_values))
+                    })
+                
+                patterns['group_analysis'].append({
+                    'group': group,
+                    'metrics': data
+                })
 
         return patterns
-    # @action(detail=True, methods=['get'])
-    # def statistics(self, request, pk=None):
-    #     survey = self.get_object()
-        
-    #     if not survey.is_closed:
-    #         return DRFResponse(
-    #             {'error': 'Survey is still active'}, 
-    #             status=status.HTTP_400_BAD_REQUEST
-    #         )
 
-    #     stats = {
-    #         'total_responses': survey.responses.count(),
-    #         'questions': []
-    #     }
+    def _calculate_trends(self, responses, trend_period):
+        # Calculate trends based on submitted_at
+        trunc_mapping = {
+            'day': TruncDay,
+            'week': TruncWeek,
+            'month': TruncMonth,
+            'quarter': TruncQuarter
+        }
 
-    #     for question in survey.questions.all():
-    #         question_stats = {
-    #             'question_text': question.question_text,
-    #             'question_type': question.question_type,
-    #         }
-    #         # rating_questions = Question.objects.filter(survey=survey, question_type=Question.QUESTION_TYPES.RATING)
-    #         answers = Answer.objects.filter(question=question)
+        trunc_func = trunc_mapping.get(trend_period, TruncDay)
+        if not trunc_func:
+            return DRFResponse(
+                {'error': 'Invalid trend_period. Must be one of: day, week, month, quarter'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        trend_data = responses.annotate(
+            period=trunc_func('submitted_at')
+        ).values('period').annotate(
+            count=Count('id'),
+            avg_completion_time=Avg('completion_time')
+        ).order_by('period')
+
+        if trend_data:
             
-    #         if question.question_type in [Question.QUESTION_TYPES.SINGLE, Question.QUESTION_TYPES.MULTIPLE]:
-    #             option_counts = {}
-    #             CHOICE_KEY = 'choices' if question.question_type == Question.QUESTION_TYPES.MULTIPLE else 'choice'
-    #             for answer in answers:
-    #                 choices = answer.value.get(CHOICE_KEY) # or answer.value.get('choice')
-    #                 if isinstance(choices, list):
-    #                     for choice in choices:
-    #                         option_counts[choice] = option_counts.get(choice, 0) + 1
-    #                 else:
-    #                     option_counts[choices] = option_counts.get(choices, 0) + 1
-    #             question_stats['option_distribution'] = option_counts
-                
-    #         elif question.question_type == 'rating':
-    #             rating_stats = answers.aggregate(
-    #                 avg_rating=Avg(Cast('value', FloatField())),
-    #                 max_rating=Max(Cast('value', FloatField())),
-    #                 min_rating=Min(Cast('value', FloatField())),
-    #                 count_ratings=Count('id')
-    #             )
-    #             question_stats.update({
-    #                 'average_rating': float(rating_stats['avg_rating']) if rating_stats['avg_rating'] is not None else None,
-    #                 'max_rating': float(rating_stats['max_rating']) if rating_stats['max_rating'] is not None else None,
-    #                 'min_rating': float(rating_stats['min_rating']) if rating_stats['min_rating'] is not None else None,
-    #                 'total_ratings': rating_stats['count_ratings']
-    #             })
+            # Convert to numpy arrays for faster processing
+            dates = np.array([item['period'] for item in trend_data])
+            counts = np.array([item['count'] for item in trend_data])
+            completion_times = np.array([
+            item['avg_completion_time'].total_seconds() if item['avg_completion_time'] else 0 
+            for item in trend_data
+        ])
 
-    #         stats['questions'].append(question_stats)
-    #     return DRFResponse(stats)
+            # Calculate moving average if we have enough data points
+            window_size = min(7, len(counts))
+            if window_size > 1:
+                moving_avg = np.convolve(counts, np.ones(window_size)/window_size, mode='valid')
+                moving_avg = [None] * (len(counts) - len(moving_avg)) + list(moving_avg)
+                completion_ma = np.convolve(completion_times, np.ones(window_size)/window_size, mode='valid')
+                completion_ma = [None] * (len(completion_times) - len(completion_ma)) + list(completion_ma)
+        
+            else:
+                moving_avg = list(counts)
+                completion_ma = list(completion_times)
+
+            # Calculate growth rate
+            growth_rate = np.zeros_like(counts, dtype=float)
+            if len(counts) > 1:
+                growth_rate[1:] = ((counts[1:] - counts[:-1]) / counts[:-1]) * 100
+
+            trends = {
+                'period': trend_period,
+                'data': [
+                    {
+                        'period': date.strftime('%Y-%m-%d'),
+                        'count': int(count),
+                        'moving_average': float(moving_avg[i]) if moving_avg[i] is not None else None,
+                        'growth_rate': float(gr),
+                        'avg_completion_time': float(ct),
+                        'completion_time_ma': float(ct_ma) if ct_ma is not None else None
+
+                    }
+                    for i, (date, count, gr, ct, ct_ma) in enumerate(zip(dates, counts, growth_rate, completion_times, completion_ma))
+                ],
+                'summary': {
+                    'total_responses': int(np.sum(counts)),
+                    'average_responses': float(np.mean(counts)),
+                    'max_responses': int(np.max(counts)),
+                    'min_responses': int(np.min(counts)),
+                    'std_dev': float(np.std(counts)),
+                    'average_growth_rate': float(np.mean(growth_rate[1:])) if len(growth_rate) > 1 else 0,
+                    'avg_completion_time': float(np.mean(completion_times)),
+                    'max_completion_time': float(np.max(completion_times)),
+                    'min_completion_time': float(np.min(completion_times)),
+                    'completion_time_std': float(np.std(completion_times))
+
+                }
+            }
+            return trends
 
 class QuestionViewSet(viewsets.ModelViewSet):
     serializer_class = QuestionSerializer
@@ -743,7 +804,6 @@ class ResponseAnswerViewSet(viewsets.ModelViewSet):
             response__respondent=self.request.user,
             response_id=self.kwargs.get('response_pk')
         )
-    
     
     # def perform_create(self, serializer):
     #     response = get_object_or_404(

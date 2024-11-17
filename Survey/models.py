@@ -109,6 +109,8 @@ class Response(models.Model):
     survey = models.ForeignKey(Survey, related_name='responses', on_delete=models.CASCADE)
     respondent = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     submitted_at = models.DateTimeField(auto_now_add=True)
+    completion_time = models.DurationField(null=True, blank=True)
+
     
     def __str__(self):
         return f"Response to {self.survey.title} at {self.submitted_at}"

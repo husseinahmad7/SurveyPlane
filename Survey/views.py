@@ -470,11 +470,6 @@ class SurveyViewSet(viewsets.ModelViewSet):
             total_answers = answers.count()
             question_stats['response_rate'] = (total_answers / stats['total_responses']) * 100 if stats['total_responses'] > 0 else 0
 
-            # Time-based analysis TODO
-            # temporal_data = answers.extra(
-            #     select={'date': "DATE(submitted_at)"}
-            # ).values('date').annotate(count=Count('id')).order_by('date')
-            # question_stats['temporal_analysis'] = list(temporal_data)
 
             if question.question_type in [Question.QUESTION_TYPES.SINGLE, Question.QUESTION_TYPES.MULTIPLE]:
                 option_counts = {}
@@ -590,69 +585,168 @@ class SurveyViewSet(viewsets.ModelViewSet):
             'trends': {}
         }
 
-        # if group_by == 'date':
-        #     # Convert to numpy arrays for faster processing
-        #     dates = np.array([r.submitted_at.date() for r in responses])
-        #     unique_dates = np.unique(dates)
-            
-        #     # Create date-based groups using numpy
-        #     date_stats = []
-        #     for date in unique_dates:
-        #         date_responses = responses.filter(submitted_at__date=date)
-        #         response_count = len(date_responses)
-                
-        #         # Calculate average completion time if needed for analysis
-        #         # completion_times = np.array([(r.submitted_at - r.survey.created_at).total_seconds() 
-        #         #                             for r in date_responses])
-        #         # avg_completion_time = float(np.mean(completion_times)) if len(completion_times) > 0 else 0
-                
-        #         date_stats.append({
-        #             'date': date,
-        #             'response_count': response_count,
-        #             # 'avg_completion_time': avg_completion_time
-        #         })
-            
-        #     patterns['group_analysis'] = sorted(date_stats, key=lambda x: x['date'])
 
         if group_by.startswith('respondent__'):
             # Group by user demographic fields if available
             field = group_by.split('__')[1]
             demographic_groups = {}
+            # Initialize question tracking
+            questions_by_type = {
+                Question.QUESTION_TYPES.RATING: {},
+                Question.QUESTION_TYPES.SINGLE: {},
+                Question.QUESTION_TYPES.MULTIPLE: {}
+            }
             
+            # Pre-populate questions
+            for question in survey.questions.all():
+                if question.question_type in questions_by_type:
+                    questions_by_type[question.question_type][question.id] = question
+            
+            # Special handling for age groups if grouping by date_of_birth
+            if field == 'date_of_birth':
+                today = timezone.now().date()
+                # Calculate ages for all respondents
+                ages = []
+                for response in responses:
+                    if response.respondent and response.respondent.date_of_birth:
+                        age = today.year - response.respondent.date_of_birth.year - (
+                            (today.month, today.day) < 
+                            (response.respondent.date_of_birth.month, response.respondent.date_of_birth.day)
+                        )
+                        ages.append(age)
+
+                if ages:
+                    # Calculate age groups dynamically using numpy percentiles
+                    ages = np.array(ages)
+                    min_age = np.min(ages)
+                    max_age = np.max(ages)
+                    
+                    # Create age groups based on distribution
+                    if len(ages) >= 4:  # If we have enough data, create quartiles
+                        percentiles = np.percentile(ages, [25, 50, 75])
+                        age_ranges = [
+                            (min_age, int(percentiles[0])),
+                            (int(percentiles[0]) + 1, int(percentiles[1])),
+                            (int(percentiles[1]) + 1, int(percentiles[2])),
+                            (int(percentiles[2]) + 1, max_age)
+                        ]
+                    else:  # If we have limited data, create equal-width groups
+                        group_width = max(1, (max_age - min_age) // 3)
+                        age_ranges = [
+                            (min_age, min_age + group_width),
+                            (min_age + group_width + 1, min_age + 2 * group_width),
+                            (min_age + 2 * group_width + 1, max_age)
+                        ]
+
+                    # Function to get age group label
+                    def get_age_group(age):
+                        for start, end in age_ranges:
+                            if start <= age <= end:
+                                return f"{start}-{end} years"
+                        return "Unknown"
             for response in responses:
                 if not response.respondent:
                     continue
+                
+                # Get the demographic value
+                if field == 'date_of_birth':
+                    if not response.respondent.date_of_birth:
+                        continue
                     
+                    age = today.year - response.respondent.date_of_birth.year - (
+                        (today.month, today.day) < 
+                        (response.respondent.date_of_birth.month, response.respondent.date_of_birth.day)
+                    )
+                    value = get_age_group(age)
+                else:
+                    value = getattr(response.respondent, field, None)
+
                 # Get the demographic value (e.g., age_group, gender, etc.)
-                value = getattr(response.respondent, field, None)
+                # value = getattr(response.respondent, field, None)
+
                 if value:
                     if value not in demographic_groups:
                         demographic_groups[value] = {
                             'count': 0,
-                            'answers': []
+                            'questions': {
+                                'rating': {},    # question_id -> list of values
+                                'single': {},    # question_id -> list of choices
+                                'multiple': {}   # question_id -> list of choice lists
+                            }
                         }
                     demographic_groups[value]['count'] += 1
-                    demographic_groups[value]['answers'].extend(response.answers.all())
+                    
+                    # Extract answer data based on question type
+                    for answer in response.answers.all():
+                        q_id = answer.question.id
+                        if answer.question.question_type == Question.QUESTION_TYPES.RATING:
+                            if q_id not in demographic_groups[value]['questions']['rating']:
+                                demographic_groups[value]['questions']['rating'][q_id] = []
+                            demographic_groups[value]['questions']['rating'][q_id].append(float(answer.value))
+                            
+                        elif answer.question.question_type == Question.QUESTION_TYPES.SINGLE:
+                            if q_id not in demographic_groups[value]['questions']['single']:
+                                demographic_groups[value]['questions']['single'][q_id] = []
+                            demographic_groups[value]['questions']['single'][q_id].append(answer.value.get('choice'))
+                            
+                        elif answer.question.question_type == Question.QUESTION_TYPES.MULTIPLE:
+                            if q_id not in demographic_groups[value]['questions']['multiple']:
+                                demographic_groups[value]['questions']['multiple'][q_id] = []
+                            demographic_groups[value]['questions']['multiple'][q_id].extend(answer.value.get('choices', []))
 
             # Analyze patterns within each demographic group
             for group, data in demographic_groups.items():
-                answer_values = []
-                for answer in data['answers']:
-                    if answer.question.question_type == Question.QUESTION_TYPES.RATING:
-                        answer_values.append(float(answer.value))
+                metrics = {
+                    'count': data['count'],
+                    'questions': {}
+                }
                 
-                if answer_values:
-                    answer_values = np.array(answer_values)
-                    data.update({
-                        'avg_rating': float(np.mean(answer_values)),
-                        'std_dev': float(np.std(answer_values)),
-                        'min_rating': float(np.min(answer_values)),
-                        'max_rating': float(np.max(answer_values))
-                    })
+                # Analyze rating questions
+                for q_id, values in data['questions']['rating'].items():
+                    if values:
+                        rating_values = np.array(values)
+                        metrics['questions'][q_id] = {
+                            'question_text': questions_by_type[Question.QUESTION_TYPES.RATING][q_id].question_text,
+                            'type': 'rating',
+                            'stats': {
+                                'avg_rating': float(np.mean(rating_values)),
+                                'std_dev': float(np.std(rating_values)),
+                                'min_rating': float(np.min(rating_values)),
+                                'max_rating': float(np.max(rating_values))
+                            }
+                        }
+                
+                # Analyze single choice questions
+                for q_id, choices in data['questions']['single'].items():
+                    if choices:
+                        choice_array = np.array(choices)
+                        unique_choices, counts = np.unique(choice_array, return_counts=True)
+                        metrics['questions'][q_id] = {
+                            'question_text': questions_by_type[Question.QUESTION_TYPES.SINGLE][q_id].question_text,
+                            'type': 'single_choice',
+                            'distribution': {
+                                str(choice): int(count)
+                                for choice, count in zip(unique_choices, counts)
+                            }
+                        }
+                
+                # Analyze multiple choice questions
+                for q_id, choices in data['questions']['multiple'].items():
+                    if choices:
+                        choice_array = np.array(choices)
+                        unique_choices, counts = np.unique(choice_array, return_counts=True)
+                        metrics['questions'][q_id] = {
+                            'question_text': questions_by_type[Question.QUESTION_TYPES.MULTIPLE][q_id].question_text,
+                            'type': 'multiple_choice',
+                            'distribution': {
+                                str(choice): int(count)
+                                for choice, count in zip(unique_choices, counts)
+                            }
+                        }
                 
                 patterns['group_analysis'].append({
                     'group': group,
-                    'metrics': data
+                    'metrics': metrics
                 })
 
         return patterns

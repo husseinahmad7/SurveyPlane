@@ -12,6 +12,8 @@ from django.db.models.functions import Cast, TruncDay, TruncWeek, TruncMonth, Tr
 from django.utils import timezone
 import numpy as np
 from datetime import datetime, timedelta
+from .services import _calculate_general_correlation
+
 # class QuestionSerializer(serializers.ModelSerializer):
 #     class Meta:
 #         model = Question
@@ -422,6 +424,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
 
         # Get query parameters for analysis
         correlation_questions = request.query_params.getlist('correlate')
+        general_correlation = request.query_params.get('general_correlation', 'false').lower() == 'true'
         filter_question = request.query_params.get('filter_question')
         filter_value = request.query_params.get('filter_value')
         group_by = request.query_params.get('group_by')  # e.g., 'date', 'respondent__age_group'
@@ -536,6 +539,9 @@ class SurveyViewSet(viewsets.ModelViewSet):
                         }
                     except Question.DoesNotExist:
                         continue
+        
+        if general_correlation:
+            stats['correlations'] = _calculate_general_correlation(survey,responses)
 
         # Pattern recognition
         if group_by:

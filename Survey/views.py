@@ -13,6 +13,8 @@ from django.utils import timezone
 import numpy as np
 from datetime import datetime, timedelta
 from .services import _calculate_general_correlation
+from .permissions import IsVerified, SurveyAccessPermission, QuestionAccessPermission, ResponseAccessPermission, ResponseAnswerAccessPermission
+from rest_framework.permissions import IsAdminUser
 
 # class QuestionSerializer(serializers.ModelSerializer):
 #     class Meta:
@@ -362,7 +364,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
         class Meta:
             model = Survey
             fields = ['id', 'title', 'description', 'creator', 'created_at', 
-                    'closes_at', 'is_active', 'questions']
+                    'closes_at', 'is_active', 'questions','respondent_auth_requirement']
             read_only_fields = ['creator', 'created_at']
 
         def validate(self, data):
@@ -391,27 +393,43 @@ class SurveyViewSet(viewsets.ModelViewSet):
         class Meta:
             model = Survey
             fields = ['id', 'title', 'description', 'creator', 'created_at', 
-                    'closes_at', 'is_active', 'is_closed', 'questions']
+                    'closes_at', 'is_active', 'respondent_auth_requirement','is_closed', 'questions']
             read_only_fields = ['creator', 'created_at']
 
     serializer_class = OutputSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [SurveyAccessPermission]
 
     def get_queryset(self):
-        if self.action == 'list':
-            # For list action, show all active surveys
+        if self.action in ['list', 'retrieve']:
             return Survey.objects.filter(is_active=True)
-        # For other actions, show all surveys created by the user
-        return Survey.objects.filter(creator=self.request.user)
+        else:
+            return Survey.objects.filter(creator=self.request.user)
+        # if self.action in ['list', 'retrieve']:
+        #     if not self.request.user.is_authenticated or (self.request.user.is_authenticated and not self.request.user.is_verified):
+        #         # For list action, show all active surveys
+        #         return Survey.objects.filter(is_active=True)
+        #     elif self.request.user.is_authenticated and self.request.user.is_verified:
+        #         return Survey.objects.filter(creator=self.request.user)
+
+        # # For other actions, show all surveys created by the user
+        # return Survey.objects.filter(creator=self.request.user)
     
 
     def get_serializer_class(self):
         if self.action == 'create':
             return self.CreateSerializer
         return super().get_serializer_class()
+    
+    # def get_permissions(self):
+    #     if self.action in ['create','statistics']:
+    #         return [IsVerified(), IsAdminUser()]
+    #     return super().get_permissions()
 
     def perform_create(self, serializer):
-        serializer.save(creator=self.request.user)
+       serializer.save(creator=self.request.user)
+
+
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
         survey = self.get_object()
@@ -838,9 +856,12 @@ class SurveyViewSet(viewsets.ModelViewSet):
 
 class QuestionViewSet(viewsets.ModelViewSet):
     serializer_class = QuestionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [QuestionAccessPermission]
 
     def get_queryset(self):
+        if self.action in ['list', 'retrieve']:
+            # return Question.objects.filter(survey__is_active=True)
+            return Question.objects.all()
         return Question.objects.filter(survey__creator=self.request.user)
 
     def perform_create(self, serializer):
@@ -851,7 +872,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], url_path='survey-questions/(?P<survey_pk>[0-9]+)')
     def survey_questions(self, request, survey_pk=None):
-        survey = Survey.objects.get(pk=survey_pk)
+        try:
+            survey = Survey.objects.get(pk=survey_pk)
+        except Survey.DoesNotExist:
+            return DRFResponse(
+                {'error': 'Survey does not exist'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
         # if not survey.is_closed:
         #     return DRFResponse(
         #         {'error': 'Survey is still active'}, 
@@ -865,7 +892,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
 
 class ResponseViewSet(viewsets.ModelViewSet):
     serializer_class = ResponseSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [ResponseAccessPermission]
 
     def get_queryset(self):    
         if self.request.user.is_staff:
@@ -895,7 +922,7 @@ class ResponseAnswerViewSet(viewsets.ModelViewSet):
     Allows updating, creating, and deleting individual answers.
     """
     serializer_class = AnswerSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [ResponseAnswerAccessPermission]
     # http_method_names = ['PUT', 'PATCH', 'POST']
 
 

@@ -8,12 +8,23 @@ import json
 User = get_user_model()
 
 class Survey(models.Model):
+    class AuthRequirement(models.TextChoices):
+        NONE = 'NONE', 'No authentication required'
+        QUICK = 'QUICK', 'Quick registration (no email verification)'
+        FULL = 'FULL', 'Full authentication required'
+    
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     creator = models.ForeignKey(User, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
     closes_at = models.DateTimeField()
     is_active = models.BooleanField(default=True)
+    respondent_auth_requirement = models.CharField(
+        max_length=10,
+        choices=AuthRequirement.choices,
+        default=AuthRequirement.QUICK,
+        help_text='Level of authentication required for respondents'
+    )
 
     def __str__(self):
         return self.title

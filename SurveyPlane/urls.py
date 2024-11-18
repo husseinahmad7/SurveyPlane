@@ -24,6 +24,7 @@ urlpatterns = [
 
 	path('accounts/', include('authemail.urls')),
 	path('Survey/', include('Survey.urls')),
+    path('respondent/', include('Account.urls')),
 ]
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

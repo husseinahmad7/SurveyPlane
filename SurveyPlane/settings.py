@@ -28,7 +28,7 @@ env.read_env(os.path.join(BASE_DIR, ".env"),overwrite=True)
 # DEBUG = True
 DEBUG = env.bool("DEBUG", True)
 SECRET_KEY = env.str('SECRET_KEY', "kfb^13))0j03gh%x-r-h-#o1u6t6l_-kr-cmbmpp$x=14j(b0x")
-ALLOWED_HOSTS = ['localhost','127.0.0.1']
+ALLOWED_HOSTS = ['localhost','127.0.0.1','surveyplane.pythonanywhere.com']
 
 
 # Application definition
@@ -51,7 +51,6 @@ INSTALLED_APPS = [
 AUTH_USER_MODEL = 'Account.User'
 
 MIDDLEWARE = [
-    'kolo.middleware.KoloMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -60,6 +59,9 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+if DEBUG:
+    MIDDLEWARE += ['kolo.middleware.KoloMiddleware']
+    # INSTALLED_APPS += ['debug_toolbar']
 
 ROOT_URLCONF = 'SurveyPlane.urls'
 

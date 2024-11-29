@@ -11,6 +11,7 @@ django-filter = "==24.2"
 django-environ = "*"
 numpy = "*"
 reportlab = "*"
+django-cors-headers = "*"
 
 [dev-packages]
 kolo = "*"

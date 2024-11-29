@@ -44,13 +44,15 @@ INSTALLED_APPS = [
 	'rest_framework.authtoken',
     'authemail',
     'Account',
-    'Survey'
+    'Survey',
+    'corsheaders'
 
 ]
 
 AUTH_USER_MODEL = 'Account.User'
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -173,3 +175,6 @@ EMAIL_USE_SSL = False
 
 ## uploading files
 max_file_size = 5 * 1024 * 1024 # 5 MB
+
+## CORS
+CORS_ALLOW_ALL_ORIGINS = True

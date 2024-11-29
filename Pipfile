@@ -10,6 +10,7 @@ django-rest-authemail = "*"
 django-filter = "==24.2"
 django-environ = "*"
 numpy = "*"
+reportlab = "*"
 
 [dev-packages]
 kolo = "*"

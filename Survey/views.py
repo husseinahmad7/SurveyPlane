@@ -16,10 +16,14 @@ from .services import _calculate_general_correlation
 from .permissions import IsVerified, SurveyAccessPermission, QuestionAccessPermission, ResponseAccessPermission, ResponseAnswerAccessPermission
 from rest_framework.permissions import IsAdminUser
 
-# class QuestionSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Question
-#         fields = ['id', 'question_text', 'question_type', 'required', 'order', 'options']
+from rest_framework.views import APIView
+from django.http import HttpResponse
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from io import BytesIO
+
 class QuestionSerializer(serializers.ModelSerializer):
     file_data = serializers.CharField(write_only=True, required=False, allow_null=True)
     url = serializers.URLField(write_only=True, required=False, allow_null=True)
@@ -484,7 +488,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
                 'question_text': question.question_text,
                 'question_type': question.question_type,
                 'response_rate': 0,
-                'temporal_analysis': {},
+                # 'temporal_analysis': {},
             }
             
             answers = Answer.objects.filter(question=question, response__in=responses)
@@ -891,6 +895,9 @@ class QuestionViewSet(viewsets.ModelViewSet):
         return DRFResponse(serializer.data)
 
 class ResponseViewSet(viewsets.ModelViewSet):
+    """
+    Response view and create from the respondent perspective.
+    """
     serializer_class = ResponseSerializer
     permission_classes = [ResponseAccessPermission]
 
@@ -1082,3 +1089,229 @@ class ResponseAnswerViewSet(viewsets.ModelViewSet):
             'created': created_answers,
             'errors': errors
         })
+
+class SurveyResponseManagementView(APIView):
+    """
+    View for survey creators to manage and export responses.
+    Provides endpoints for listing responses, viewing individual responses,
+    and exporting to PDF with optional statistics.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    export_pdf = False
+
+    def get_survey(self, survey_id):
+        try:
+            survey = Survey.objects.get(pk=survey_id, creator=self.request.user)
+            return survey
+        except Survey.DoesNotExist:
+            return None
+    def get(self, request, survey_id, response_id=None, export_pdf=False):
+        survey = self.get_survey(survey_id)
+        if not survey:
+            return DRFResponse({'error': 'Survey not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if self.export_pdf:
+            include_stats = request.query_params.get('include_stats', 'false').lower() == 'true'
+            responses = Response.objects.filter(survey=survey)
+            pdf = self._generate_pdf(survey, responses, include_stats)
+            response = HttpResponse(content_type='application/pdf')
+            response['Content-Disposition'] = f'attachment; filename="survey_responses_{survey_id}.pdf"'
+            response.write(pdf)
+            return response
+
+        if response_id:
+            # Retrieve single response with details
+            try:
+                response = Response.objects.get(pk=response_id, survey=survey)
+                data = {
+                    'response_id': response.id,
+                    'submitted_at': response.submitted_at,
+                    'completion_time': response.completion_time,
+                    'respondent': {
+                        'id': response.respondent.id if response.respondent else None,
+                        'email': response.respondent.email if response.respondent else None,
+                        'first_name': response.respondent.first_name if response.respondent else None,
+                        'last_name': response.respondent.last_name if response.respondent else None,
+                        'date_of_birth': response.respondent.date_of_birth if response.respondent else None,
+                        'location': response.respondent.location if response.respondent else None,
+                        'gender': response.respondent.gender if response.respondent else None,
+                    } if response.respondent else None,
+                    'answers': [{
+                        'question_id': answer.question.id,
+                        'question_text': answer.question.question_text,
+                        'question_type': answer.question.question_type,
+                        'value': answer.value
+                    } for answer in response.answers.all()]
+                }
+                return DRFResponse(data)
+            except Response.DoesNotExist:
+                return DRFResponse({'error': 'Response not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # List all responses with basic info
+        responses = Response.objects.filter(survey=survey)
+        data = [{
+            'response_id': response.id,
+            'submitted_at': response.submitted_at,
+            'completion_time': response.completion_time,
+            'respondent': {
+                'email': response.respondent.email if response.respondent else None,
+                'name': f"{response.respondent.first_name} {response.respondent.last_name}" if response.respondent else None,
+            } if response.respondent else None,
+            'answer_count': response.answers.count()
+        } for response in responses]
+        return DRFResponse(data)
+    # def get(self, request, survey_id, response_id=None):
+    #     survey = self.get_survey(survey_id)
+    #     if not survey:
+    #         return DRFResponse({'error': 'Survey not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    #     if response_id:
+    #         # Retrieve single response with details
+    #         try:
+    #             response = Response.objects.get(pk=response_id, survey=survey)
+    #             data = {
+    #                 'response_id': response.id,
+    #                 'submitted_at': response.submitted_at,
+    #                 'completion_time': response.completion_time,
+    #                 'respondent': {
+    #                     'id': response.respondent.id if response.respondent else None,
+    #                     'email': response.respondent.email if response.respondent else None,
+    #                     'first_name': response.respondent.first_name if response.respondent else None,
+    #                     'last_name': response.respondent.last_name if response.respondent else None,
+    #                     'date_of_birth': response.respondent.date_of_birth if response.respondent else None,
+    #                     'location': response.respondent.location if response.respondent else None,
+    #                     'gender': response.respondent.gender if response.respondent else None,
+    #                 } if response.respondent else None,
+    #                 'answers': [{
+    #                     'question_id': answer.question.id,
+    #                     'question_text': answer.question.question_text,
+    #                     'question_type': answer.question.question_type,
+    #                     'value': answer.value
+    #                 } for answer in response.answers.all()]
+    #             }
+    #             return DRFResponse(data)
+    #         except Response.DoesNotExist:
+    #             return DRFResponse({'error': 'Response not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    #     # List all responses with basic info
+    #     responses = Response.objects.filter(survey=survey)
+    #     data = [{
+    #         'response_id': response.id,
+    #         'submitted_at': response.submitted_at,
+    #         'completion_time': response.completion_time,
+    #         'respondent': {
+    #             'email': response.respondent.email if response.respondent else None,
+    #             'name': f"{response.respondent.first_name} {response.respondent.last_name}" if response.respondent else None,
+    #         } if response.respondent else None,
+    #         'answer_count': response.answers.count()
+    #     } for response in responses]
+    #     return DRFResponse(data)
+
+    def _generate_pdf(self, survey, responses, include_stats=False):
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=30
+        )
+        elements.append(Paragraph(f"Survey Responses: {survey.title}", title_style))
+        elements.append(Spacer(1, 20))
+        
+        if include_stats:
+            # Add statistics section
+            stats_style = ParagraphStyle(
+                'Stats',
+                parent=styles['Normal'],
+                fontSize=12,
+                spaceAfter=20
+            )
+            stats = self._calculate_statistics(survey, responses)
+            elements.append(Paragraph("Survey Statistics", styles['Heading2']))
+            elements.append(Paragraph(f"Total Responses: {stats['total_responses']}", stats_style))
+            elements.append(Paragraph(f"Average Completion Time: {stats['avg_completion_time']}", stats_style))
+            elements.append(Spacer(1, 20))
+
+        # Prepare response data
+        headers = ['Response ID', 'Submitted At', 'Respondent']
+        question_headers = [q.question_text for q in survey.questions.all()]
+        headers.extend(question_headers)
+        
+        data = [headers]
+        for response in responses:
+            row = [
+                str(response.id),
+                response.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
+                f"{response.respondent.email if response.respondent else 'Anonymous'}"
+            ]
+            
+            # Add answers
+            answers_dict = {a.question_id: a.value for a in response.answers.all()}
+            for question in survey.questions.all():
+                value = answers_dict.get(question.id, '')
+                if isinstance(value, dict):
+                    if 'choice' in value:
+                        row.append(value['choice'])
+                    elif 'choices' in value:
+                        row.append(', '.join(value['choices']))
+                else:
+                    row.append(str(value))
+            
+            data.append(row)
+        
+        # Create table
+        table = Table(data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 14),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 12),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        elements.append(table)
+        
+        # Build PDF
+        doc.build(elements)
+        pdf = buffer.getvalue()
+        buffer.close()
+        return pdf
+
+    def _calculate_statistics(self, survey, responses):
+        """Calculate basic statistics for the survey responses."""
+        total_responses = len(responses)
+        completion_times = [r.completion_time.total_seconds() for r in responses if r.completion_time]
+        avg_completion_time = sum(completion_times) / len(completion_times) if completion_times else 0
+        
+        return {
+            'total_responses': total_responses,
+            'avg_completion_time': f"{avg_completion_time/60:.2f} minutes"
+        }
+
+    # @action(detail=True, methods=['get'])
+    # def export_pdf(self, request, survey_id):
+    #     """Export survey responses to PDF with optional statistics."""
+    #     survey = self.get_survey(survey_id)
+    #     if not survey:
+    #         return DRFResponse({'error': 'Survey not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    #     include_stats = request.query_params.get('include_stats', 'false').lower() == 'true'
+    #     responses = Response.objects.filter(survey=survey)
+        
+    #     pdf = self._generate_pdf(survey, responses, include_stats)
+        
+    #     response = HttpResponse(content_type='application/pdf')
+    #     response['Content-Disposition'] = f'attachment; filename="survey_responses_{survey_id}.pdf"'
+    #     response.write(pdf)
+    #     return response

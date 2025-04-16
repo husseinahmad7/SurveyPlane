@@ -3,11 +3,44 @@
 <head>
     <meta charset="UTF-8" />
     <title>Thank you for signing up!</title>
+    <style>
+        .copy-button {
+            padding: 5px 10px;
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+        .link-container {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
 </head>
 <body>
-<p>
-Verify your email address by clicking on this link:<br>
-<a href="http://127.0.0.1:8000/signup/verify/?code={{ code }}">http://127.0.0.1:8000/signup/verify/?code={{ code }}</a>
-</p>
+<p>Verify your email address by clicking on this link:</p>
+
+<div class="link-container">
+    <a href="https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}">https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}</a>
+    <button class="copy-button" onclick="copyToClipboard('https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}')" title="Copy link to clipboard">Copy Link</button>
+</div>
+
+<p>If the button above doesn't work, you can copy and paste the link into your browser.</p>
+
+<script>
+    function copyToClipboard(text) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('Link copied to clipboard!');
+    }
+</script>
 </body>
 </html>

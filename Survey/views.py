@@ -405,7 +405,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
     permission_classes = [SurveyAccessPermission]
 
     def get_queryset(self):
-        if self.action in ['list', 'retrieve']:
+        if self.action in ['list', 'retrieve']: # TODO retrieve admin owner, fix email mesagges
             return Survey.objects.filter(is_active=True)
         else:
             return Survey.objects.filter(creator=self.request.user)
@@ -433,7 +433,12 @@ class SurveyViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
        serializer.save(creator=self.request.user)
 
-
+    @action(detail=False, methods=['get'])
+    def management(self, request):
+        creator_surveys = Survey.objects.filter(creator=self.request.user)
+        serializer = self.get_serializer(creator_surveys, many=True)
+        return DRFResponse(serializer.data)
+        
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
         survey = self.get_object()

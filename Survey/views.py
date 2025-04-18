@@ -405,7 +405,7 @@ class SurveyViewSet(viewsets.ModelViewSet):
     permission_classes = [SurveyAccessPermission]
 
     def get_queryset(self):
-        if self.action in ['list', 'retrieve']: # TODO retrieve admin owner, fix email mesagges
+        if self.action in ['list', 'retrieve']:
             return Survey.objects.filter(is_active=True)
         else:
             return Survey.objects.filter(creator=self.request.user)
@@ -876,7 +876,8 @@ class QuestionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         survey = Survey.objects.get(pk=self.kwargs['survey_pk'])
         if survey.creator != self.request.user:
-            raise permissions.PermissionDenied()
+            raise serializers.ValidationError("You are not the creator of this survey",
+                                              code=status.HTTP_403_FORBIDDEN)
         serializer.save(survey=survey)
     
     @action(detail=False, methods=['get'], url_path='survey-questions/(?P<survey_pk>[0-9]+)')

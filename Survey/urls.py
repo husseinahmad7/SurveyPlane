@@ -1,7 +1,7 @@
 
 from rest_framework import routers
 from django.urls import path, include
-from .views import SurveyViewSet, QuestionViewSet, ResponseViewSet, ResponseAnswerViewSet,SurveyResponseManagementView
+from .views import SurveyViewSet, QuestionViewSet, ResponseViewSet, ResponseAnswerViewSet, SurveyResponseManagementView
 router = routers.DefaultRouter()
 router.register(r'surveys', SurveyViewSet, basename='survey')
 
@@ -10,7 +10,7 @@ question_router = routers.DefaultRouter()
 
 question_router.register(r'questions', QuestionViewSet, basename='survey-questions')
 response_router = routers.DefaultRouter()
- 
+
 response_router.register(r'responses', ResponseViewSet, basename='survey-responses')
 
 
@@ -28,4 +28,6 @@ urlpatterns = [
     path('surveys/<int:survey_id>/responses/<int:response_id>/', SurveyResponseManagementView.as_view(), name='survey-response-detail'),
     path('surveys/<int:survey_id>/responses/export/', SurveyResponseManagementView.as_view(export_pdf=True), name='survey-responses-export'),
 
+    # Survey Question Management URL
+    path('surveys/<int:survey_pk>/questions/', QuestionViewSet.as_view({'post': 'create'}), name='survey-question-create'),
 ]

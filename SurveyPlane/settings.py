@@ -70,7 +70,7 @@ ROOT_URLCONF = 'SurveyPlane.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR, 'Account', 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -100,9 +100,9 @@ DATABASES = {
 # DATABASES = {
 #     'default': {
 #     'ENGINE': 'django.db.backends.postgresql',
-#     'NAME': env('DB_NAME'),
-#     'USER': env('DB_USER'),
-#     'PASSWORD': env('DB_PASSWORD'),
+#     'NAME': env('POSTGRES_DB'),
+#     'USER': env('POSTGRES_USER'),
+#     'PASSWORD': env('POSTGRES_PASSWORD'),
 #     'HOST': 'localhost',
 #     'PORT': '5432'
 # }}

@@ -1,2 +1,5 @@
 Verify your email address by clicking on this link:
-    https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}
+    https://surveyplane.pythonanywhere.com/accounts/signup/verify/?code={{ code }}
+
+Or use this verification code:
+    {{ code }}

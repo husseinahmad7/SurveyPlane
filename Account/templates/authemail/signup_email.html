@@ -19,14 +19,33 @@
             border: 1px solid #ddd;
             border-radius: 4px;
         }
+        .code-container {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
 <p>Verify your email address by clicking on this link:</p>
 
 <div class="link-container">
-    <a href="https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}">https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}</a>
-    <button class="copy-button" onclick="copyToClipboard('https://surveyplane.pythonanywhere.com/signup/verify/?code={{ code }}')" title="Copy link to clipboard">Copy Link</button>
+    <a href="https://surveyplane.pythonanywhere.com/accounts/signup/verify/?code={{ code }}">https://surveyplane.pythonanywhere.com/accounts/signup/verify/?code={{ code }}</a>
+    <button class="copy-button" onclick="copyToClipboard('https://surveyplane.pythonanywhere.com/accounts/signup/verify/?code={{ code }}')" title="Copy link to clipboard">Copy Link</button>
+    <br>
+    <br>
+    Or use this verification code:
+    {{ code }}
+</div>
+
+<div class="code-container">
+    <p>Or use this verification code:</p>
+    <span id="verification-code">{{ code }}</span>
+    <button class="copy-button" onclick="copyToClipboard(document.getElementById('verification-code').innerText)" title="Copy code to clipboard">Copy Code</button>
 </div>
 
 <p>If the button above doesn't work, you can copy and paste the link into your browser.</p>

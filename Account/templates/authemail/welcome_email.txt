@@ -3,6 +3,6 @@ Welcome to SurveyPlane!
 Thank you for joining SurveyPlane. Your account has been successfully activated.
 
 You can now log in and start using our platform:
-https://surveyplane.pythonanywhere.com/accounts/login/
+https://surveyplane.pythonanywhere.com/login/
 
 If you have any questions, please don't hesitate to contact our support team.

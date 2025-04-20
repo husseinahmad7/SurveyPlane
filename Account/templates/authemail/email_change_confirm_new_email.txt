@@ -1,5 +1,2 @@
 Confirm your email address change by clicking on this link:
-    https://surveyplane.pythonanywhere.com/accounts/email/change/verify/?code={{ code }}
-
-Or use this verification code:
-    {{ code }}
+    https://surveyplane.pythonanywhere.com/email/change/verify/?code={{ code }}

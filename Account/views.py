@@ -4,8 +4,6 @@ from ipware import get_client_ip
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.utils.translation import gettext as _
-from django.shortcuts import render, redirect
-from django.http import HttpResponse
 
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -16,8 +14,6 @@ from rest_framework.views import APIView
 from authemail.models import SignupCode, EmailChangeCode, PasswordResetCode
 from authemail.models import send_multi_format_email
 from authemail.serializers import LoginSerializer
-from authemail.views import SignupVerify as BaseSignupVerify
-from authemail.views import PasswordResetVerify as BasePasswordResetVerify
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -40,7 +36,7 @@ class RespondentSignup(APIView):
         location = serializers.CharField(max_length=30)
         gender = serializers.ChoiceField(choices=User.Gender.choices)
 
-
+    
     permission_classes = (AllowAny,)
     serializer_class = SignupSerializer
 
@@ -56,7 +52,7 @@ class RespondentSignup(APIView):
             date_of_birth = serializer.data['date_of_birth']
             gender = serializer.data['gender']
             location = serializer.data['location']
-
+            
 
             must_validate_email = getattr(settings, "AUTH_EMAIL_VERIFICATION", True)
 
@@ -75,7 +71,7 @@ class RespondentSignup(APIView):
 
             except get_user_model().DoesNotExist:
                 user = get_user_model().objects.create_user(email=email)
-
+                
 
             # Set user fields provided
             user.set_password(password)
@@ -109,7 +105,7 @@ class RespondentSignup(APIView):
             return Response(content, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+    
 
 class RespondentLogin(APIView):
     permission_classes = (AllowAny,)
@@ -142,51 +138,6 @@ class RespondentLogin(APIView):
                            _('Unable to login with provided credentials.')}
                 return Response(content, status=status.HTTP_401_UNAUTHORIZED)
 
-
-class SignupVerify(BaseSignupVerify):
-    """
-    Custom view to override the default signup verification view
-    to provide a user-friendly HTML response instead of JSON.
-    """
-    def get(self, request):
-        code = request.GET.get('code', '')
-        output = request.GET.get('output', '')
-        try:
-            signup_code = SignupCode.objects.get(code=code)
-            user = signup_code.user
-            user.is_verified = True
-            user.save()
-            signup_code.delete()
-            # Send welcome email
-            send_multi_format_email('welcome_email',
-                                  {'email': user.email},
-                                  target_email=user.email)
-            if output == 'json':
-                return Response({'detail': 'Email verification successful'}, status=status.HTTP_200_OK)
-            # Return HTML response instead of JSON
-            return render(request, 'verification_success.html')
-        except SignupCode.DoesNotExist:
-            if output == 'json':
-                return Response({'detail': 'Invalid verification code'}, status=status.HTTP_400_BAD_REQUEST)
-            return HttpResponse("Invalid verification code", status=400)
-
-
-class PasswordResetVerify(BasePasswordResetVerify):
-    """
-    Custom view to override the default password reset verification view
-    to provide a user-friendly HTML response instead of JSON.
-    """
-    def get(self, request):
-        code = request.GET.get('code', '')
-        output = request.GET.get('output', '')
-        try:
-            # Just check if the code exists
-            PasswordResetCode.objects.get(code=code)
-            if output == 'json':
-                return Response({'detail': 'Password reset code is valid'}, status=status.HTTP_200_OK)
-            # Return HTML response instead of JSON
-            return render(request, 'password_reset_success.html')
-        except PasswordResetCode.DoesNotExist:
-            if output == 'json':
-                return Response({'detail': 'Invalid password reset code'}, status=status.HTTP_400_BAD_REQUEST)
-            return HttpResponse("Invalid password reset code", status=400)
+        else:
+            return Response(serializer.errors,
+                            status=status.HTTP_400_BAD_REQUEST)

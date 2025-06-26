@@ -7,14 +7,18 @@ from .config import ANSWER_FILE_PATH_KEY, QUESTION_ATTACHEMENT_FILE_PATH_KEY
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response as DRFResponse
-from django.db.models import Count, Avg, Max, Min, StdDev, FloatField, Case, When, Value, F
+from django.db.models import Count, Avg, Max, Min, StdDev, FloatField, Case, When, Value, F, Q
 from django.db.models.functions import Cast, TruncDay, TruncWeek, TruncMonth, TruncQuarter
+from django.db import models
 from django.utils import timezone
 import numpy as np
 from datetime import datetime, timedelta
 from .services import _calculate_general_correlation
 from .permissions import IsVerified, SurveyAccessPermission, QuestionAccessPermission, ResponseAccessPermission, ResponseAnswerAccessPermission
 from rest_framework.permissions import IsAdminUser
+from django_filters.rest_framework import DjangoFilterBackend
+from django_filters import rest_framework as filters
+from rest_framework.filters import OrderingFilter
 
 from rest_framework.views import APIView
 from django.http import HttpResponse
@@ -22,7 +26,155 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
 from io import BytesIO
+
+
+class SurveyFilter(filters.FilterSet):
+    """
+    Filter class for Survey model with comprehensive filtering options.
+    """
+    # Filter by respondent authentication requirement
+    respondent_auth_requirement = filters.ChoiceFilter(
+        choices=Survey.AuthRequirement.choices,
+        help_text="Filter by authentication requirement level"
+    )
+
+    # Filter by active status
+    is_active = filters.BooleanFilter(
+        help_text="Filter by active status"
+    )
+
+    # Filter by creator
+    creator = filters.NumberFilter(
+        field_name='creator__id',
+        help_text="Filter by creator user ID"
+    )
+
+    creator_email = filters.CharFilter(
+        field_name='creator__email',
+        lookup_expr='icontains',
+        help_text="Filter by creator email (case-insensitive partial match)"
+    )
+
+    # Date range filters
+    created_after = filters.DateTimeFilter(
+        field_name='created_at',
+        lookup_expr='gte',
+        help_text="Filter surveys created after this date (YYYY-MM-DD HH:MM:SS)"
+    )
+
+    created_before = filters.DateTimeFilter(
+        field_name='created_at',
+        lookup_expr='lte',
+        help_text="Filter surveys created before this date (YYYY-MM-DD HH:MM:SS)"
+    )
+
+    closes_after = filters.DateTimeFilter(
+        field_name='closes_at',
+        lookup_expr='gte',
+        help_text="Filter surveys that close after this date (YYYY-MM-DD HH:MM:SS)"
+    )
+
+    closes_before = filters.DateTimeFilter(
+        field_name='closes_at',
+        lookup_expr='lte',
+        help_text="Filter surveys that close before this date (YYYY-MM-DD HH:MM:SS)"
+    )
+
+    # Text search filters
+    title = filters.CharFilter(
+        lookup_expr='icontains',
+        help_text="Filter by title (case-insensitive partial match)"
+    )
+
+    description = filters.CharFilter(
+        lookup_expr='icontains',
+        help_text="Filter by description (case-insensitive partial match)"
+    )
+
+    # Search across title and description
+    search = filters.CharFilter(
+        method='filter_search',
+        help_text="Search across title and description"
+    )
+
+    # Filter by survey status (open/closed)
+    is_closed = filters.BooleanFilter(
+        method='filter_is_closed',
+        help_text="Filter by whether survey is currently closed"
+    )
+
+    # Filter surveys with responses
+    has_responses = filters.BooleanFilter(
+        method='filter_has_responses',
+        help_text="Filter surveys that have/don't have responses"
+    )
+
+    # Filter by minimum number of responses
+    min_responses = filters.NumberFilter(
+        method='filter_min_responses',
+        help_text="Filter surveys with at least this many responses"
+    )
+
+    class Meta:
+        model = Survey
+        fields = [
+            'respondent_auth_requirement',
+            'is_active',
+            'creator',
+            'creator_email',
+            'created_after',
+            'created_before',
+            'closes_after',
+            'closes_before',
+            'title',
+            'description',
+            'search',
+            'is_closed',
+            'has_responses',
+            'min_responses'
+        ]
+
+    def filter_search(self, queryset, name, value):
+        """Search across title and description fields"""
+        if value:
+            return queryset.filter(
+                Q(title__icontains=value) |
+                Q(description__icontains=value)
+            )
+        return queryset
+
+    def filter_is_closed(self, queryset, name, value):
+        """Filter by whether survey is currently closed"""
+        from django.utils import timezone
+        now = timezone.now()
+
+        if value is True:
+            # Return closed surveys (closes_at <= now or is_active=False)
+            return queryset.filter(
+                Q(closes_at__lte=now) | Q(is_active=False)
+            )
+        elif value is False:
+            # Return open surveys (closes_at > now and is_active=True)
+            return queryset.filter(closes_at__gt=now, is_active=True)
+        return queryset
+
+    def filter_has_responses(self, queryset, name, value):
+        """Filter surveys that have or don't have responses"""
+        if value is True:
+            return queryset.filter(responses__isnull=False).distinct()
+        elif value is False:
+            return queryset.filter(responses__isnull=True).distinct()
+        return queryset
+
+    def filter_min_responses(self, queryset, name, value):
+        """Filter surveys with at least the specified number of responses"""
+        if value is not None:
+            return queryset.annotate(
+                response_count=Count('responses')
+            ).filter(response_count__gte=value)
+        return queryset
 
 class QuestionSerializer(serializers.ModelSerializer):
     file_data = serializers.CharField(write_only=True, required=False, allow_null=True)
@@ -403,6 +555,10 @@ class SurveyViewSet(viewsets.ModelViewSet):
     serializer_class = OutputSerializer
     # permission_classes = [permissions.IsAuthenticated]
     permission_classes = [SurveyAccessPermission]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = SurveyFilter
+    ordering_fields = ['created_at', 'closes_at', 'title', 'id']
+    ordering = ['-created_at']  # Default ordering by newest first
 
     def get_queryset(self):
         if self.action in ['list', 'retrieve']:
@@ -1215,79 +1371,170 @@ class SurveyResponseManagementView(APIView):
 
     def _generate_pdf(self, survey, responses, include_stats=False):
         buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+        # Use landscape orientation for better table fit
+        page_width, page_height = landscape(letter)
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(letter),
+            leftMargin=0.5*inch,
+            rightMargin=0.5*inch,
+            topMargin=0.5*inch,
+            bottomMargin=0.5*inch
+        )
         elements = []
         styles = getSampleStyleSheet()
-        
+
         # Title
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=24,
-            spaceAfter=30
+            fontSize=20,
+            spaceAfter=20,
+            alignment=1  # Center alignment
         )
         elements.append(Paragraph(f"Survey Responses: {survey.title}", title_style))
-        elements.append(Spacer(1, 20))
-        
+        elements.append(Spacer(1, 12))
+
         if include_stats:
             # Add statistics section
             stats_style = ParagraphStyle(
                 'Stats',
                 parent=styles['Normal'],
-                fontSize=12,
-                spaceAfter=20
+                fontSize=10,
+                spaceAfter=12
             )
             stats = self._calculate_statistics(survey, responses)
-            elements.append(Paragraph("Survey Statistics", styles['Heading2']))
+            elements.append(Paragraph("Survey Statistics", styles['Heading3']))
             elements.append(Paragraph(f"Total Responses: {stats['total_responses']}", stats_style))
             elements.append(Paragraph(f"Average Completion Time: {stats['avg_completion_time']}", stats_style))
-            elements.append(Spacer(1, 20))
+            elements.append(Spacer(1, 12))
 
-        # Prepare response data
-        headers = ['Response ID', 'Submitted At', 'Respondent']
-        question_headers = [q.question_text for q in survey.questions.all()]
+        # Prepare response data with text wrapping
+        headers = ['ID', 'Submitted', 'Respondent']
+        questions = list(survey.questions.all())
+
+        # Truncate long question texts for headers
+        question_headers = []
+        for q in questions:
+            header_text = q.question_text
+            if len(header_text) > 30:
+                header_text = header_text[:27] + "..."
+            question_headers.append(header_text)
+
         headers.extend(question_headers)
-        
-        data = [headers]
+
+        # Prepare data with proper text wrapping
+        data = []
+
+        # Create wrapped header cells
+        wrapped_headers = []
+        for header in headers:
+            wrapped_headers.append(Paragraph(header, ParagraphStyle(
+                'HeaderStyle',
+                parent=styles['Normal'],
+                fontSize=9,
+                fontName='Helvetica-Bold',
+                textColor=colors.whitesmoke,
+                alignment=1,
+                wordWrap='CJK'
+            )))
+        data.append(wrapped_headers)
+
+        # Process response data
         for response in responses:
             row = [
-                str(response.id),
-                response.submitted_at.strftime('%Y-%m-%d %H:%M:%S'),
-                f"{response.respondent.email if response.respondent else 'Anonymous'}"
+                Paragraph(str(response.id), ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8)),
+                Paragraph(response.submitted_at.strftime('%Y-%m-%d<br/>%H:%M:%S'), ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8)),
+                Paragraph(f"{response.respondent.email if response.respondent else 'Anonymous'}", ParagraphStyle('CellStyle', parent=styles['Normal'], fontSize=8, wordWrap='CJK'))
             ]
-            
-            # Add answers
+
+            # Add answers with text wrapping
             answers_dict = {a.question_id: a.value for a in response.answers.all()}
-            for question in survey.questions.all():
+            for question in questions:
                 value = answers_dict.get(question.id, '')
+                display_value = ''
+
                 if isinstance(value, dict):
                     if 'choice' in value:
-                        row.append(value['choice'])
+                        display_value = str(value['choice'])
                     elif 'choices' in value:
-                        row.append(', '.join(value['choices']))
+                        display_value = ', '.join(value['choices'])
                 else:
-                    row.append(str(value))
-            
+                    display_value = str(value)
+
+                # Truncate very long values
+                if len(display_value) > 50:
+                    display_value = display_value[:47] + "..."
+
+                wrapped_cell = Paragraph(display_value, ParagraphStyle(
+                    'CellStyle',
+                    parent=styles['Normal'],
+                    fontSize=8,
+                    wordWrap='CJK',
+                    alignment=1
+                ))
+                row.append(wrapped_cell)
+
             data.append(row)
-        
-        # Create table
-        table = Table(data)
+
+        # Calculate column widths based on available space
+        available_width = page_width - doc.leftMargin - doc.rightMargin
+        num_columns = len(headers)
+
+        # Set minimum and preferred widths for different column types
+        fixed_columns = {
+            0: 0.8*inch,  # ID column
+            1: 1.2*inch,  # Submitted column
+            2: 1.5*inch   # Respondent column
+        }
+
+        # Calculate remaining width for question columns
+        fixed_width = sum(fixed_columns.values())
+        remaining_width = available_width - fixed_width
+        question_column_width = remaining_width / max(1, (num_columns - len(fixed_columns)))
+
+        # Build column widths list
+        col_widths = []
+        for i in range(num_columns):
+            if i in fixed_columns:
+                col_widths.append(fixed_columns[i])
+            else:
+                col_widths.append(question_column_width)
+
+        # Create table with calculated widths
+        table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle([
+            # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 14),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('TOPPADDING', (0, 0), (-1, 0), 8),
+
+            # Data rows styling
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
             ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 12),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 1), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 1), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+
+            # Grid
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+
+            # Alternating row colors for better readability
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.beige, colors.lightgrey])
         ]))
+
         elements.append(table)
-        
+
         # Build PDF
         doc.build(elements)
         pdf = buffer.getvalue()

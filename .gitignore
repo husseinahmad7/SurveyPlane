@@ -19,3 +19,4 @@ celerybeat-schedule
 auto_tests.py
 .aider*
 docker-compose.yml
+db.sqlite3
